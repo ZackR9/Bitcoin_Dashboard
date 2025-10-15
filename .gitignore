@@ -1,0 +1,9 @@
+# Python
+venv/
+__pycache__/
+
+# IDE
+.vscode/
+
+# Sensitive Data
+*.csv
