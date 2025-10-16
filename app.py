@@ -1,19 +1,33 @@
 import streamlit as st
 import pandas as pd
 import requests
-import matplotlib.pyplot as plt
-import seaborn as sns
+import json
 from datetime import datetime
+import os
 
-# Config
-COINGECKO_API = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=cad,usd"
+# --- Load config file ---
+CONFIG_PATH = "config.json"
+config = {}
+if os.path.exists(CONFIG_PATH):
+    with open(CONFIG_PATH, "r") as f:
+        config = json.load(f)
+else:
+    st.warning(f"Config file '{CONFIG_PATH}' not found. Please create it to enable dynamic data loading.")
+
+# --- Get settings from config or fallback ---
+COINGECKO_API = config.get("api_settings", {}).get(
+    "coingecko_api",
+    "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=cad,usd"
+)
+SHAKEPAY_CSV_PATH = config.get("data_sources", {}).get("shakepay_csv_path", None)
+LEDGER_ADDRESS = config.get("data_sources", {}).get("ledger_address", "")
+REFRESH_INTERVAL = config.get("api_settings", {}).get("refresh_interval", 300)
 
 st.set_page_config(page_title="BTC Tax Tracker", page_icon="🪙")
 st.title("🪙 Bitcoin Tax & Profit Tracker")
-st.sidebar.title("Shakepay Analytics")
 
-# Get current BTC price
-@st.cache_data(ttl=300)  # Cache for 5 minutes
+# --- Get current BTC price ---
+@st.cache_data(ttl=REFRESH_INTERVAL)
 def get_btc_price():
     response = requests.get(COINGECKO_API)
     return response.json()['bitcoin']
@@ -22,175 +36,74 @@ current_prices = get_btc_price()
 current_price_cad = current_prices['cad']
 current_price_usd = current_prices['usd']
 
-# Display current price in sidebar
-st.sidebar.metric("Current BTC Price (CAD)", f"${current_price_cad:,.2f}")
-st.sidebar.metric("Current BTC Price (USD)", f"${current_price_usd:,.2f}")
+# --- Ledger balance input (auto-fetch from config) ---
+def get_ledger_balance(address):
+    url = f"https://blockstream.info/api/address/{address}"
+    try:
+        resp = requests.get(url)
+        data = resp.json()
+        sats = data.get("chain_stats", {}).get("funded_txo_sum", 0) - data.get("chain_stats", {}).get("spent_txo_sum", 0)
+        btc = sats / 1e8
+        return btc
+    except Exception as e:
+        st.warning(f"Could not fetch Ledger balance automatically: {e}")
+        return None
 
-# 1. Upload & Parse Shakepay CSV
-st.subheader("📊 Upload Shakepay Transaction History")
-st.info("Export your **crypto transactions** from Shakepay: Settings → Export Transaction History → Crypto Transactions")
+ledger_btc_balance = get_ledger_balance(LEDGER_ADDRESS)
+ledger_value_cad = ledger_btc_balance * current_price_cad if ledger_btc_balance is not None else 0
+ledger_value_usd = ledger_btc_balance * current_price_usd if ledger_btc_balance is not None else 0
 
-uploaded_file = st.file_uploader("Upload Shakepay Crypto Transactions CSV", type="csv")
-
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-    
-    # Show raw data preview
-    with st.expander("View Raw Data"):
-        st.dataframe(df.head(10))
-    
-    # Parse dates (Shakepay uses "Date" column)
+# --- Shakepay CSV auto-load from config ---
+if SHAKEPAY_CSV_PATH and os.path.exists(SHAKEPAY_CSV_PATH):
+    df = pd.read_csv(SHAKEPAY_CSV_PATH)
     df['Date'] = pd.to_datetime(df['Date'])
-    
-    # Filter for Bitcoin purchases only (Type = "Buy" and Asset Credited = "BTC")
     btc_buys = df[(df['Type'] == 'Buy') & (df['Asset Credited'] == 'BTC')].copy()
-    
-    if len(btc_buys) == 0:
-        st.warning("No Bitcoin purchases found in this CSV file. Make sure you uploaded the **Crypto Transactions** CSV.")
-    else:
-        # Calculate metrics using the actual column names
-        total_btc_purchased = btc_buys['Amount Credited'].sum()
-        total_cad_spent = btc_buys['Book Cost'].sum()
-        average_buy_price = total_cad_spent / total_btc_purchased
-        total_sats = total_btc_purchased * 1e8
-        
-        # Current value and profit/loss
-        current_value_cad = total_btc_purchased * current_price_cad
-        unrealized_gain_cad = current_value_cad - total_cad_spent
-        unrealized_gain_pct = (unrealized_gain_cad / total_cad_spent) * 100
-        
-        # Display Summary Metrics
-        st.subheader("💰 Portfolio Summary")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric("Total Invested (CAD)", f"${total_cad_spent:,.2f}")
-            st.metric("Total BTC Purchased", f"{total_btc_purchased:.8f}")
-            st.metric("Total Sats", f"{total_sats:,.0f}")
-        
-        with col2:
-            st.metric("Average Buy Price (CAD)", f"${average_buy_price:,.2f}")
-            st.metric("Current Value (CAD)", f"${current_value_cad:,.2f}")
-            st.metric("Number of Purchases", len(btc_buys))
-        
-        with col3:
-            st.metric(
-                "Unrealized Gain/Loss (CAD)", 
-                f"${unrealized_gain_cad:,.2f}",
-                delta=f"{unrealized_gain_pct:.2f}%"
-            )
-            break_even_price = average_buy_price
-            st.metric("Break-even Price (CAD)", f"${break_even_price:,.2f}")
-        
-        # Tax Information
-        st.subheader("📋 Tax Information (Canada)")
-        st.write(f"**Tax Year:** {datetime.now().year}")
-        st.write(f"**Cost Basis (ACB):** ${total_cad_spent:,.2f} CAD")
-        st.write(f"**Current Fair Market Value:** ${current_value_cad:,.2f} CAD")
-        
-        if unrealized_gain_cad > 0:
-            capital_gain_50pct = unrealized_gain_cad * 0.5
-            st.write(f"**Unrealized Capital Gain (50% taxable):** ${capital_gain_50pct:,.2f} CAD")
-            st.info("💡 This is unrealized gain. Capital gains tax only applies when you sell or dispose of your Bitcoin.")
-        else:
-            st.write(f"**Unrealized Capital Loss:** ${abs(unrealized_gain_cad):,.2f} CAD")
-        
-        # Transaction History Table
-        st.subheader("📜 Transaction History")
-        
-        # Prepare display dataframe
-        display_df = btc_buys[['Date', 'Amount Credited', 'Book Cost', 'Buy / Sell Rate']].copy()
-        display_df.columns = ['Date', 'BTC Purchased', 'CAD Spent', 'Price per BTC']
-        display_df['Sats'] = display_df['BTC Purchased'] * 1e8
-        display_df = display_df.sort_values('Date', ascending=False)
-        
-        st.dataframe(
-            display_df.style.format({
-                'BTC Purchased': '{:.8f}',
-                'CAD Spent': '${:,.2f}',
-                'Price per BTC': '${:,.2f}',
-                'Sats': '{:,.0f}'
-            }),
-            use_container_width=True
-        )
-        
-        # Charts
-        st.subheader("📈 Visualizations")
-        
-        # Cumulative BTC stacked over time
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            buys_sorted = btc_buys.sort_values('Date').copy()
-            buys_sorted['Cumulative BTC'] = buys_sorted['Amount Credited'].cumsum()
-            
-            fig, ax = plt.subplots(figsize=(10, 6))
-            sns.lineplot(data=buys_sorted, x='Date', y='Cumulative BTC', ax=ax, marker='o')
-            ax.set_title("Cumulative BTC Accumulated Over Time")
-            ax.set_ylabel("Total BTC")
-            ax.set_xlabel("Date")
-            plt.xticks(rotation=45)
-            plt.tight_layout()
-            st.pyplot(fig)
-        
-        with col2:
-            fig, ax = plt.subplots(figsize=(10, 6))
-            sns.barplot(data=buys_sorted, x='Date', y='Amount Credited', ax=ax)
-            ax.set_title("BTC Purchase Amounts")
-            ax.set_ylabel("BTC Purchased")
-            ax.set_xlabel("Date")
-            plt.xticks(rotation=45)
-            plt.tight_layout()
-            st.pyplot(fig)
-        
-        # Download tax summary
-        st.subheader("💾 Export Tax Summary")
-        tax_summary = f"""
-Bitcoin Tax Summary - {datetime.now().year}
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}
-
-PORTFOLIO SUMMARY:
-Total BTC Purchased: {total_btc_purchased:.8f} BTC
-Total CAD Invested: ${total_cad_spent:,.2f} CAD
-Average Cost Basis: ${average_buy_price:,.2f} CAD per BTC
-Number of Transactions: {len(btc_buys)}
-
-CURRENT POSITION:
-Current BTC Price: ${current_price_cad:,.2f} CAD
-Current Portfolio Value: ${current_value_cad:,.2f} CAD
-Unrealized Gain/Loss: ${unrealized_gain_cad:,.2f} CAD ({unrealized_gain_pct:.2f}%)
-
-TAX INFORMATION (Canada):
-Adjusted Cost Base (ACB): ${total_cad_spent:,.2f} CAD
-Fair Market Value: ${current_value_cad:,.2f} CAD
-Unrealized Capital Gain (50% taxable): ${unrealized_gain_cad * 0.5:,.2f} CAD
-
-Note: Consult with a tax professional for accurate tax reporting.
-"""
-        st.download_button(
-            label="Download Tax Summary (TXT)",
-            data=tax_summary,
-            file_name=f"btc_tax_summary_{datetime.now().strftime('%Y%m%d')}.txt",
-            mime="text/plain"
-        )
-
+    total_btc_purchased = btc_buys['Amount Credited'].sum()
+    total_cad_spent = btc_buys['Book Cost'].sum()
+    average_buy_price = total_cad_spent / total_btc_purchased if total_btc_purchased > 0 else 0
 else:
-    st.warning("👆 Please upload your Shakepay **Crypto Transactions** CSV file to begin analysis")
-    st.markdown("""
-    ### How to Export:
-    1. Open Shakepay app
-    2. Go to **Settings**
-    3. Select **Export Transaction History**
-    4. Choose **Crypto Transactions Summary**
-    5. Upload the `crypto_transactions_summary.csv` file here
-    
-    ### Required Columns:
-    - Date
-    - Type (should include 'Buy')
-    - Asset Credited (BTC)
-    - Amount Credited
-    - Book Cost (CAD spent)
-    """)
+    st.error("Shakepay CSV file not found or path not set in config.")
+    btc_buys = pd.DataFrame()
+    total_btc_purchased = 0
+    total_cad_spent = 0
+    average_buy_price = 0
+
+# --- Display Main Dashboard ---
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric("BTC Price (CAD)", f"${current_price_cad:,.2f}")
+    st.metric("BTC Price (USD)", f"${current_price_usd:,.2f}")
+with col2:
+    st.metric("Total Ledger Balance (BTC)", f"{ledger_btc_balance:.8f}")
+    st.metric("Total Ledger Balance (CAD)", f"${ledger_value_cad:,.2f}")
+    st.metric("Total Ledger Balance (USD)", f"${ledger_value_usd:,.2f}")
+with col3:
+    st.metric("Average Buy Price (Shakepay, CAD)", f"${average_buy_price:,.2f}")
+
+# --- P&L Calculation (Ledger minus Shakepay cost basis) ---
+if ledger_btc_balance is not None and total_cad_spent > 0:
+    pnl_cad = (ledger_btc_balance * current_price_cad) - total_cad_spent
+    pnl_pct = (pnl_cad / total_cad_spent) * 100
+    st.metric("Total P&L (CAD, Ledger minus Shakepay cost)", f"${pnl_cad:,.2f}", delta=f"{pnl_pct:.2f}%")
+else:
+    st.info("P&L cannot be calculated (missing Ledger balance or Shakepay cost basis).")
+
+# --- Tax Information ---
+st.subheader("📋 Tax Information (Canada)")
+st.write(f"**Tax Year:** {datetime.now().year}")
+st.write(f"**Cost Basis (ACB from Shakepay):** ${total_cad_spent:,.2f} CAD")
+if ledger_btc_balance is not None:
+    fair_market_value = ledger_btc_balance * current_price_cad
+    unrealized_gain = fair_market_value - total_cad_spent
+    if unrealized_gain > 0:
+        st.write(f"**Unrealized Capital Gain (50% taxable):** ${unrealized_gain * 0.5:,.2f} CAD")
+        st.info("💡 This is unrealized gain. Capital gains tax only applies when you sell or dispose of your Bitcoin.")
+    else:
+        st.write(f"**Unrealized Capital Loss:** ${abs(unrealized_gain):,.2f} CAD")
+else:
+    st.info("Ledger balance not available for tax calculation.")
+
+st.warning("⚠️ If you purchased BTC from other exchanges before Shakepay, you'll need to add those transactions manually or consult a tax professional for accurate cost basis.")
 
 # Footer
 st.markdown("---")
