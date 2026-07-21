@@ -1,7 +1,10 @@
 import json
 import os
 
-CONFIG_PATH = "config.json"
+# All user data (config.json + CSVs + state.json) lives in one directory so it
+# can be mounted as a Docker volume. Defaults to the repo root for local runs.
+DATA_DIR = os.environ.get("DATA_DIR", ".")
+CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 
 
 def _read_raw():
@@ -9,6 +12,15 @@ def _read_raw():
         return None
     with open(CONFIG_PATH, "r") as f:
         return json.load(f)
+
+
+def _resolve(path, default_name):
+    """Data file paths are relative to DATA_DIR unless absolute; every file has
+    a default name so the app works with no config.json at all."""
+    path = path or default_name
+    if os.path.isabs(path):
+        return path
+    return os.path.join(DATA_DIR, path)
 
 
 def load():
@@ -29,12 +41,20 @@ def load():
     return {
         "config_found": found,
         "refresh_interval": api.get("refresh_interval", 300),
+        # Legacy cash location; store.py's state.json takes precedence when set.
         "cash_cad": raw.get("cash", {}).get("chequing_cad", 0),
-        "shakepay_csv_path": crypto.get("shakepay_csv_path") or legacy.get("shakepay_csv_path"),
+        "shakepay_csv_path": _resolve(
+            crypto.get("shakepay_csv_path") or legacy.get("shakepay_csv_path"),
+            "shakepay.csv",
+        ),
         "btc_addresses": btc_addresses,
         "eth_address": crypto.get("eth_address", ""),
-        "stocks_holdings_csv_path": raw.get("stocks", {}).get("holdings_csv_path"),
-        "metals_purchases_csv_path": raw.get("metals", {}).get("purchases_csv_path"),
+        "stocks_holdings_csv_path": _resolve(
+            raw.get("stocks", {}).get("holdings_csv_path"), "ws_holdings.csv"
+        ),
+        "metals_purchases_csv_path": _resolve(
+            raw.get("metals", {}).get("purchases_csv_path"), "metals_purchases.csv"
+        ),
     }
 
 

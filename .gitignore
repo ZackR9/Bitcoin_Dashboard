@@ -9,3 +9,6 @@ __pycache__/
 *.csv
 *.csv.bak
 config.json
+state.json
+state.json.bak
+data/

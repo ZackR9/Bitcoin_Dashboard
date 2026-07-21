@@ -1,4 +1,5 @@
 import os
+import shutil
 
 import pandas as pd
 import streamlit as st
@@ -22,6 +23,12 @@ def load_purchases(csv_path):
     except Exception as e:
         st.error(f"Could not read metals CSV: {e}")
         return None
+
+
+def save_purchases(df, csv_path):
+    if os.path.exists(csv_path):
+        shutil.copy2(csv_path, csv_path + ".bak")
+    df.to_csv(csv_path, index=False)
 
 
 def summarize(purchases):

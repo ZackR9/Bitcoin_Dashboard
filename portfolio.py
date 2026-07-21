@@ -15,6 +15,8 @@ def summarize(classes):
     allocation = pd.DataFrame(
         [{"asset_class": c["name"], "value_cad": c.get("value_cad") or 0} for c in classes]
     )
+    # Entries may be per-asset (multiple rows per class); aggregate for the chart.
+    allocation = allocation.groupby("asset_class", as_index=False)["value_cad"].sum()
     allocation = allocation[allocation["value_cad"] > 0]
     return {
         "total_value_cad": total_value,
