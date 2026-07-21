@@ -1,0 +1,16 @@
+.git
+.gitignore
+.vscode
+.claude
+venv
+__pycache__
+*.pyc
+data
+*.csv
+*.csv.bak
+config.json
+state.json
+Dockerfile
+docker-compose.yml
+README.md
+CLAUDE.md

@@ -1,0 +1,11 @@
+services:
+  dashboard:
+    build: .
+    container_name: investing-dashboard
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/data
+    # Comes back up whenever Docker Desktop starts (enable "Start Docker Desktop
+    # when you sign in to your computer" in Docker Desktop settings).
+    restart: unless-stopped
